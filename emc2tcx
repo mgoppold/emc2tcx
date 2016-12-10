@@ -1,0 +1,210 @@
+#!/usr/bin/perl
+#
+# emc2tcx (c) 2016 Mario Goppold; mgoppold at web dot de
+# emc is for ergo_memo_card
+#
+use strict;
+use warnings;
+use locale;
+use POSIX qw(strftime);
+use POSIX qw(setlocale LC_NUMERIC);
+use Encode qw(encode);
+use Time::Local qw(timelocal timegm);
+use File::Basename;
+use Getopt::Std;
+use Scalar::Util qw(looks_like_number);
+use XML::Writer;
+use IO::File;
+
+setlocale LC_NUMERIC, "us-ascii";
+
+my $typedef = 'iH8H2H6A64iiffffffifffffffff';
+my $sizeof  = 152;                             # sould be   length pack($typedef,()) but is'nt
+my $buffer;
+my $difference_to_utc = ( timegm(localtime) - timelocal(localtime) );
+my %opts;
+
+getopts( 'p:x:h', \%opts );
+if ( ( scalar keys %opts ) == 0 || length $opts{h} ) {
+   print "emc2tcx -p PATH [-x [NUM|ALL]]\n";
+   exit 0;
+}
+
+my $daumpath = $opts{p};
+
+die "Entweder ".$daumpath." ist kein Verzeichnis oder DAUM-Inhaltesverzeichnis ".$daumpath."/dictionary.2 existiert nicht.\n" if ( ( !-d $daumpath ) or ( !-f $daumpath."/dictionary.2" ) );
+
+my $DAUMDICT;
+open( $DAUMDICT, "<", $daumpath."/dictionary.2" ) or die "Kann Inhaltsverzeichnis dictionary.2 in ".$daumpath." nicht lesen: ".$!;
+
+my $lfdnr = 0;
+while ( read( $DAUMDICT, $buffer, $sizeof ) == $sizeof ) {
+   $lfdnr++;
+   my ( $file, $d0, $typ, $d1, $text, $starttime, $endetime, $watt, $d2, $pulse, $rpm, $speed, $d3, $duration, $dist, $maxspeed, $d4, $maxrpm, $d5, $d6, $kjoule, $d7 ) = unpack( $typedef, $buffer );
+   my $fstarttime = strftime "%d.%m.%Y %H:%M", localtime( $starttime - $difference_to_utc );   # in UTC
+   my $fendetime  = strftime "%H:%M",          localtime( $endetime - $difference_to_utc );
+   my $infilename = sprintf( "%016x", $file );
+   my $outfilename = sprintf( "%04d  %s %4dmin %6.1fkm  %s", $lfdnr, strftime( "%d_%m_%Y %H_%M_%S", localtime( $starttime - $difference_to_utc ) ), $duration / 60, $dist / 1000., $text );
+   $outfilename =~ tr /\/./_/;
+   $outfilename .= ".tcx";
+   $outfilename = encode( "utf-8", $outfilename );
+   $text        = encode( "utf-8", $text );
+
+   if ( ( ( ( not defined $opts{x} ) or ( ( defined $opts{x} ) and ( $opts{x} eq "ALL" ) ) ) and ( $file % 10 == 0 ) ) or ( ( defined $opts{x} ) and ( looks_like_number( $opts{x} ) && ( $opts{x} == $lfdnr ) ) ) ) {
+      printf "\n%3s %-16s %16s %-50s %6s %5s %5s %5s %5s %5s %5s %5s %5s %6s %6s %5s %5s %3s %5s %5s %6s %5s\n",
+        "Nr", "File", "start", "text", "kCal", "dfv", "watt", "pulse", "rpm", "speed", "time", "dist", "mspeed", "mrpm", "kJoule", "d5", "d7", "typ", "d2", "d3", "d4", "d6";
+   }
+   if ( $duration gt 0 ) {
+      my $realKCal = ( $watt * $duration / 1000 ) * 4.9271 / 4.1868;
+      my $dfv = $watt / ( $pulse != 0 ? $pulse : 10000 );
+      printf "%3d %016x %16s %-50s %6.1f %5.2f %5.1f %5.1f %5.1f %5.1f %02d:%02d %6.1f %5.1f %6.1f %6.1f %5.1f %5.1f %3s %5.1f %5.1f %6.1f %5.1f\n",
+        $lfdnr, $file, $fstarttime, $text, $realKCal, $dfv, $watt, $pulse, $rpm, $speed, ( $duration / ( 60 * 60 ) ) % 24, ( $duration / 60 ) % 60, $dist / 1000., $maxspeed, $maxrpm, $kjoule, $d5, $d7, $typ, $d2, $d3, $d4, $d6 if ( not defined $opts{x} or ( ( looks_like_number( $opts{x} ) && ( $opts{x} == $lfdnr ) ) or ( $opts{x} eq "ALL" ) ) );
+      &write_tcx( $daumpath."/".$infilename, $outfilename, $text, $starttime - $difference_to_utc, $duration, $realKCal, $dist, $pulse, $rpm, $speed, $maxspeed, $maxrpm  ) if ( defined $opts{x} and ( ( looks_like_number( $opts{x} ) && ( $opts{x} == $lfdnr ) ) or ( $opts{x} eq "ALL" ) ) );
+   }
+}
+close($DAUMDICT) || warn "Konnte ".$daumpath."/dictionary.2 nicht sauber schließen: $!";
+
+print "\n";
+0;
+
+sub write_tcx {
+   my ( $infile, $outfile, $text, $starttime, $duration, $realKCal, $distance, $avpulse, $avrpm, $avspeed, $maxspeed, $maxrpm ) = @_;
+   my $typedef    = 'lffssssscH2sssssssH2cf';
+   my $sizeof     = length pack( $typedef, () );   # 44
+   my $buffer     = "";
+   my $DAUMRESULT = undef;
+   my $DAUMTCX    = undef;
+   my $writer     = undef;
+   my $ftime      = strftime "%Y-%m-%dT%H:%M:%SZ", localtime( $starttime );   # in UTC
+   my $maxpulse   = 0;
+   my $sumwatt    = 0;
+   my $maxwatt    = 0;
+
+   open( $DAUMRESULT, "<", "$infile" )  or die "Kann ".$infile." nicht lesen: ".$!;
+   while ( read( $DAUMRESULT, $buffer, $sizeof ) == $sizeof ) {
+     my (
+        $sec, $dist, $kjoule, $slop, $nm, $rpm, $speed, $watt,
+        $dummy1, $dummy2,
+        $pulse,  $pulstime1, $pulstime2, $pulstime3, $pulstime4, $pulstime5, $pulstime6,
+        $dummy3, $dummy4,
+        $trainings_value
+     ) = unpack( $typedef, $buffer );
+     $maxpulse = $pulse>$maxpulse?$pulse:$maxpulse;
+     $maxwatt  = $watt>$maxwatt?$watt:$maxwatt;
+     $sumwatt  += $watt;
+   }
+   close($DAUMRESULT) || warn "Konnte ".$infile." nicht sauber schließen: $!";
+
+
+   open( $DAUMRESULT, "<", "$infile" )  or die "Kann ".$infile." nicht lesen: ".$!;
+   $DAUMTCX = new IO::File(">"."$outfile") or die "Kann ".$outfile." nicht schreiben: ".$!;
+   $writer = new XML::Writer(OUTPUT => $DAUMTCX,
+                             NEWLINES => 0,
+                             DATA_MODE => 1,
+                             DATA_INDENT => 3,
+                             NAMESPACES => 0,
+                             ENCODING => "us-ascii");
+
+   $writer->xmlDecl("us-ascii","yes");
+   $writer->startTag("TrainingCenterDatabase",
+  "xmlns:ns5"=>"http://www.garmin.com/xmlschemas/ActivityGoals/v1",
+  "xmlns:ns3"=>"http://www.garmin.com/xmlschemas/ActivityExtension/v2",
+  "xmlns:ns2"=>"http://www.garmin.com/xmlschemas/UserProfile/v2" ,
+  "xmlns"=>"http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
+  "xmlns:xsi"=>"http://www.w3.org/2001/XMLSchema-instance",
+  "xmlns:ns4"=>"http://www.garmin.com/xmlschemas/ProfileExtension/v1",
+  "xsi:schemaLocation"=>"http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd");
+
+   $writer->startTag("Activities");
+      $writer->startTag("Activity", "Sport" => "Biking" );
+      $writer->dataElement("Id", $ftime );
+      $writer->startTag("Lap", "StartTime" => $ftime );
+         $writer->dataElement("TotalTimeSeconds", $duration);
+         $writer->dataElement("DistanceMeters", $distance);
+         $writer->dataElement("MaximumSpeed", $maxspeed*0.2777);
+         $writer->dataElement("Calories", int($realKCal));
+         $writer->startTag("AverageHeartRateBpm");
+            $writer->dataElement("Value", int($avpulse));
+         $writer->endTag("AverageHeartRateBpm");
+         $writer->startTag("MaximumHeartRateBpm");
+            $writer->dataElement("Value", int($maxpulse));
+         $writer->endTag("MaximumHeartRateBpm");
+         $writer->dataElement("Intensity", "Active");
+         $writer->dataElement("Cadence", int($avrpm));
+         $writer->dataElement("TriggerMethod", "Manual");
+         $writer->startTag("Track");
+
+         while ( read( $DAUMRESULT, $buffer, $sizeof ) == $sizeof ) {
+           my (
+              $sec, $dist, $kjoule, $slop, $nm, $rpm, $speed, $watt,
+              $dummy1, $dummy2,
+              $pulse,  $pulstime1, $pulstime2, $pulstime3, $pulstime4, $pulstime5, $pulstime6,
+              $dummy3, $dummy4,
+              $trainings_value
+           ) = unpack( $typedef, $buffer );
+           $writer->startTag("Trackpoint");
+              $ftime = strftime "%Y-%m-%dT%H:%M:%SZ", localtime( $starttime + $sec);
+              $writer->dataElement("Time",$ftime);
+              $writer->dataElement("DistanceMeters",$dist);
+              $writer->startTag("HeartRateBpm");
+                 $writer->dataElement("Value", $pulse);
+              $writer->endTag("HeartRateBpm");
+              $writer->dataElement("Cadence",int($rpm/10.));
+              $writer->startTag("Extensions");
+                 $writer->startTag("ns3:TPX");
+                    $writer->dataElement("ns3:Speed",$speed*0.02777);
+                    $writer->dataElement("ns3:Watts",$watt);
+                 $writer->endTag("ns3:TPX");
+              $writer->endTag("Extensions");
+           $writer->endTag("Trackpoint");
+
+         }
+         $writer->endTag("Track");
+         $writer->startTag("Extensions");
+            $writer->startTag("ns3:LX");
+               $writer->dataElement("ns3:MaxBikeCadence",$maxrpm);
+            $writer->endTag("ns3:LX");
+            $writer->startTag("ns3:LX");
+               $writer->dataElement("ns3:AvgSpeed",$avspeed);
+            $writer->endTag("ns3:LX");
+            $writer->startTag("ns3:LX");
+               $writer->dataElement("ns3:AvgWatts",$sumwatt/$duration);
+            $writer->endTag("ns3:LX");
+            $writer->startTag("ns3:LX");
+               $writer->dataElement("ns3:MaxWatts",$maxwatt);
+            $writer->endTag("ns3:LX");
+         $writer->endTag("Extensions");
+      $writer->endTag("Lap");
+      $writer->cdataElement("Notes", $text);
+      $writer->startTag("Creator", "xsi:type"=>"Device_t");
+         $writer->dataElement("Name"=>"ergobike Premium 8i");
+         $writer->dataElement("UnitId"=>"");
+         $writer->dataElement("ProductID"=>"");
+         $writer->startTag("Version");
+            $writer->dataElement("VersionMajor","1");
+            $writer->dataElement("VersionMinor","1");
+            $writer->dataElement("BuildMajor","0");
+            $writer->dataElement("BuildMinor","0");
+         $writer->endTag("Version");
+      $writer->endTag("Creator");
+   $writer->endTag("Activity");
+   $writer->endTag("Activities");
+#    <Author xsi:type="Application_t">
+#    <Name>Garmin Connect API</Name>
+#    <Build>
+#      <Version>
+#        <VersionMajor>16</VersionMajor>
+#        <VersionMinor>22</VersionMinor>
+#        <BuildMajor>1</BuildMajor>
+#        <BuildMinor>1</BuildMinor>
+#      </Version>
+#    </Build>
+#    <LangID>en</LangID>
+#    <PartNumber>006-D2449-00</PartNumber>
+#  </Author>
+
+   $writer->endTag("TrainingCenterDatabase");
+   $writer->end();
+   $DAUMTCX->close() || warn "Konnte ".$outfile." nicht sauber schließen: $!";
+   close($DAUMRESULT) || warn "Konnte ".$infile." nicht sauber schließen: $!";
+}
