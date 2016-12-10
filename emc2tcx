@@ -178,8 +178,8 @@ sub write_tcx {
       $writer->cdataElement("Notes", $text);
       $writer->startTag("Creator", "xsi:type"=>"Device_t");
          $writer->dataElement("Name"=>"ergobike Premium 8i");
-         $writer->dataElement("UnitId"=>"");
-         $writer->dataElement("ProductID"=>"");
+         $writer->dataElement("UnitId"=>"1");
+         $writer->dataElement("ProductID"=>"1");
          $writer->startTag("Version");
             $writer->dataElement("VersionMajor","1");
             $writer->dataElement("VersionMinor","1");
