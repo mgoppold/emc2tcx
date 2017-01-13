@@ -89,7 +89,7 @@ sub write_tcx {
         $dummy3, $dummy4,
         $trainings_value
      ) = unpack( $typedef, $buffer );
-     $maxpulse = $pulse>$maxpulse?$pulse:$maxpulse;
+     $maxpulse = $pulse>$maxpulse?$pulse:$maxpulse if $pulse<300.; # skip spikes
      $maxwatt  = $watt>$maxwatt?$watt:$maxwatt;
      $sumwatt  += $watt;
    }
