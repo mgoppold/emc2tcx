@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-# emc2tcx (c) 2016 Mario Goppold; mgoppold at web dot de
+# emc2tcx (c) 2016, 2017 Mario Goppold; mgoppold at web dot de
 # emc is for ergo_memo_card
 #
 use strict;
@@ -23,6 +23,10 @@ my $sizeof  = 152;                             # sould be   length pack($typedef
 my $buffer;
 my $difference_to_utc = ( timegm(localtime) - timelocal(localtime) );
 my %opts;
+# OpenStreetmap GPS-Referenzpunkt Chemnitz https://www.openstreetmap.org/node/3841767258
+my $latitude="50.832684";
+my $longitude="12.919635";
+my $altitude="296.97";
 
 getopts( 'p:x:h', \%opts );
 if ( ( scalar keys %opts ) == 0 || length $opts{h} ) {
@@ -145,6 +149,13 @@ sub write_tcx {
            $writer->startTag("Trackpoint");
               $ftime = strftime "%Y-%m-%dT%H:%M:%SZ", localtime( $starttime + $sec);
               $writer->dataElement("Time",$ftime);
+# Begin TCX Daten werden nicht meht importiert
+#              $writer->startTag("Position");
+#                 $writer->dataElement("LatitudeDegrees",$latitude);
+#                 $writer->dataElement("LongitudeDegrees",$longitude);
+#              $writer->endTag("Position");
+#              $writer->dataElement("AltitudeMeters",$altitude);
+# Ende TCX Daten werden nicht meht importiert
               $writer->dataElement("DistanceMeters",$dist);
               $writer->startTag("HeartRateBpm");
                  $writer->dataElement("Value", $pulse);
